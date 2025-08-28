@@ -45,12 +45,6 @@ XY_NOISE_STD = 0.5
 RENDER_WIDTH = 800
 RENDER_HEIGHT = 800
 ##########################################################
-class DrawText:
-    def __init__(self, label:pyglet.text.Label):
-        self.label=label
-    def render(self):
-        self.label.draw()
-##########################################################
 def softsign(x):
     return x/(abs(x)+1)
 ##########################################################
@@ -59,7 +53,7 @@ class environment(gym.Env):
         'render.modes': ['human', 'rgb_array'],
         'video.frames_per_second': 30
         }
-    def __init__(self, reward_params):
+    def __init__(self):
         self.fix_size_observation = False        
         self.exe_time = datetime.now().strftime('%Y%m%d%H%M%S')
         self.episode_count = 0
@@ -89,8 +83,6 @@ class environment(gym.Env):
 
         self.evaluation = [None for _ in range(MAX_OTH_SHIP_NUM+1)]
 
-        self.reward_params = reward_params
-
     def _seed(self, seed = None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
@@ -102,13 +94,17 @@ class environment(gym.Env):
         self.sim_time = 0
         # reset own ship
         self.OwnShip.reset( x_init=0, y_init=0, sog_init=10*1.852/3600, head_init=0, rot_init=0 )
+        self.own_bumper = np.random.uniform(
+            low  = self.OwnShip._Loa*1,
+            high = self.OwnShip._Loa*8,
+            size=(4,)
+        )
         # reset oth ship
         ## 他船の数をランダムに決定
         self.oth_num = np.random.randint(MAX_OTH_SHIP_NUM+1)
         self._reset_others(self.oth_num)
         # reset goal
         # goalの位置は自船前方に設定
-        # goal_dir = np.random.uniform(-np.pi/6,np.pi/6)
         self.OwnShip._Heading = np.random.uniform(-np.pi/6,np.pi/6)
         goal_dir = 0
         dist2goal = 10*1.852/3600 * EPISODE_TIME * 5
@@ -153,7 +149,7 @@ class environment(gym.Env):
                 self.OtherShips[idx].reset( init_x, init_y, init_sog, init_cog, init_rot )
                 
                 # # 相手船の初期位置がバンパー外にいるか確認
-                if (init_x-self.OwnShip._X)**2 + (init_y-self.OwnShip._Y)**2 >= (7*0.34)**2:
+                if (init_x-self.OwnShip._X)**2 + (init_y-self.OwnShip._Y)**2 >= (8*0.34)**2:
                     break
 
             rel_posi = (
@@ -209,7 +205,6 @@ class environment(gym.Env):
         AIの観測する状態を計算する関数
         現状の観測は以下の通り
         """
-        state = []
         # 自船情報
         OwnPosi = np.array(self.OwnShip.data[:2])
         own_cog = np.radians(self.OwnShip.data[3])
@@ -218,50 +213,69 @@ class environment(gym.Env):
         Goal_Dir = np.degrees(np.arctan2(*RelGoal))%360
         if Goal_Dir>180:
             Goal_Dir -= 360
-        state += [
+        state_wp = [
             # 目的地に関する情報 dx, dy, dcog
             RelGoal[0]/DX_DY_NORM, RelGoal[1]/DX_DY_NORM, Goal_Dir/180, 
         ]
         # 他船に関する情報
+        state_oth = []
         for idx, oth in enumerate(self.OtherShips):
             if idx<self.oth_num:
                 OthPosi = np.array(oth.data[:2])
                 RelOth  = (OthPosi-OwnPosi)@np.array([[np.cos(own_cog),np.sin(own_cog)],[-np.sin(own_cog),np.cos(own_cog)]])
-                Oth_Dir = np.degrees(np.arctan2(*RelOth))%360
-                if Oth_Dir>180:
-                    Oth_Dir -= 360
+                RelOth_norm = np.array(
+                    [
+                        (RelOth[0]/self.own_bumper[0] if RelOth[0]>=0 else RelOth[0]/self.own_bumper[2] ),
+                        (RelOth[1]/self.own_bumper[1] if RelOth[1]>=0 else RelOth[1]/self.own_bumper[3] ),
+                    ]
+                )
+                Oth_norm_Dir = np.degrees(np.arctan2(*RelOth_norm))
 
                 RelVx = oth.data[2]*np.sin(np.radians(oth.data[3]-self.OwnShip.data[3])) - 0
                 RelVy = oth.data[2]*np.cos(np.radians(oth.data[3]-self.OwnShip.data[3])) - self.OwnShip.data[2]
 
+                u_norm = 10*1.852/3600
+                RelVx_norm =  (RelVx/u_norm/self.own_bumper[0]*self.OwnShip._Loa if RelOth[0]>=0 else RelVx/u_norm/self.own_bumper[2]*self.OwnShip._Loa )
+                RelVy_norm =  (RelVy/u_norm/self.own_bumper[1]*self.OwnShip._Loa if RelOth[1]>=0 else RelVy/u_norm/self.own_bumper[3]*self.OwnShip._Loa )
+
                 # Closest Point for Approach
                 dcpa = abs(np.array([-RelVy,RelVx])@(-RelOth)/np.sqrt(RelVx**2+RelVy**2+1e-12))
                 tcpa = np.array([RelVx,RelVy])@(-RelOth)/(RelVx**2+RelVy**2+1e-12)
+                cpa = RelOth + oth.data[2]*np.array([ RelVx, RelVy ] )*tcpa
 
-                cpa = RelOth + oth.data[2]*np.array(
-                    [
-                        np.sin(np.radians(oth.data[3]-self.OwnShip.data[3])),
-                        np.cos(np.radians(oth.data[3]-self.OwnShip.data[3]))
-                    ]
-                )*tcpa
-
-
-                state += [
-                    # 相対的な運動情報, relative x, relative y, relative cog, relative vx, relative vy, relative v
-                    RelOth[0]/DX_DY_NORM, RelOth[1]/DX_DY_NORM, Oth_Dir/180,
-                    RelVx/REL_U_NORM, RelVy/REL_U_NORM, np.sqrt(RelOth@RelOth)/DIST_NORM,
-                    cpa[0]/DX_DY_NORM, cpa[1]/DX_DY_NORM, dcpa/DIST_NORM, tcpa/1000
+                cpa_norm = [
+                    (cpa[0]/self.own_bumper[0] if cpa[0]>=0 else cpa[0]/self.own_bumper[2] ),
+                    (cpa[1]/self.own_bumper[1] if cpa[1]>=0 else cpa[1]/self.own_bumper[3] ),
                 ]
+
+                dcpa_norm = np.sqrt( cpa_norm[0]**2+cpa_norm[1]**2 )
+                
+                state_oth.append(
+                    [
+                        RelOth_norm[0]/10,
+                        RelOth_norm[1]/10,
+                        Oth_norm_Dir/180,
+                        RelVx_norm,
+                        RelVy_norm,
+                        np.sqrt( RelOth_norm[0]**2 + RelOth_norm[1]**2 )/10,
+                        cpa_norm[0],
+                        cpa_norm[1],
+                        dcpa_norm,
+                        tcpa/(100*STEP_DT),
+                    ]
+                )
             elif self.fix_size_observation:
                 # 入力の数を一定とするために，1埋めのダミーデータを代入
-                state += [
-                    # 相対的な運動情報, relative x, relative y, relative cog, relative vx, relative vy, relative v
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-                ]
+                state_oth.append(
+                    [
+                        # 相対的な運動情報, relative x, relative y, relative cog, relative vx, relative vy, relative v
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    ]
+                )
 
 
         # return np.clip(state, -1, 1)
-        return np.array(state)
+        return np.array(state_wp), np.array(state_oth)
 
     def _cal_reward(self):
         self.rewards_for_log = []
@@ -269,10 +283,7 @@ class environment(gym.Env):
         OwnPosi = np.array(self.OwnShip.data[:2])
         own_cog = np.radians(self.OwnShip.data[3])
         ## 現状は他船との距離に応じて負の報酬(ペナルティ)を与える
-        reward = 0
-
         reward_col = 0
-        reward_cpa = 0
         for n in range(self.oth_num):
             # 他船との距離に応じた報酬を計算
             OthPosi = np.array(self.OtherShips[n].data[:2])
@@ -280,10 +291,10 @@ class environment(gym.Env):
 
             dist = np.sqrt(
                 (
-                    rel_posi[0]/1.6/0.34 if rel_posi[0]>=0 else rel_posi[0]/1.6/0.34
+                    rel_posi[0]/self.own_bumper[0] if rel_posi[0]>=0 else rel_posi[0]/self.own_bumper[2]
                 )**2
                 + (
-                    rel_posi[1]/6.4/0.34 if rel_posi[1]>=0 else rel_posi[1]/1.6/0.34
+                    rel_posi[1]/self.own_bumper[1]  if rel_posi[1]>=0 else rel_posi[1]/self.own_bumper[3]
                 )**2
             )
             if dist<1:
@@ -297,12 +308,6 @@ class environment(gym.Env):
             else:
                 self.rewards_for_log.append(0)
             
-            # if self.Dist2Oth[n] > dist:
-            #     _r = -np.exp( -(dist)**2/2 )
-            # else:
-            #     _r = 0
-            # reward_col += _r
-            # self.rewards_for_log.append(_r)
             self.Dist2Oth[n] = dist
 
         reward_wp=0
@@ -311,22 +316,19 @@ class environment(gym.Env):
         if Goal_Dir>180:
             Goal_Dir -= 360
         
-        reward_wp = self.reward_params[0]*(
-            self.reward_params[1]*np.exp(-(Goal_Dir/self.reward_params[4])**2/2)
-            + self.reward_params[2]*(np.clip(1-abs(Goal_Dir)/180,0,1) )
+        reward_wp = (
+            0.8*np.exp(-(Goal_Dir/60)**2/2)
+            + 0.2*(np.clip(1-abs(Goal_Dir)/180,0,1) )
         )
         if reward_col==0:
             _del = np.clip((abs(self.dir2goal)-abs(Goal_Dir))/min([10,abs(self.dir2goal)+0.01]), 0, 1)
-            reward_wp += self.reward_params[3]*_del
+            reward_wp += 0.2*_del
         
             
-        reward = reward_col + reward_wp
-        
         self.dir2goal = Goal_Dir
         
         self.rewards_for_log.insert(0,reward_wp)
-        self.rewards_for_log.append(reward)
-        return reward
+        return reward_wp, reward_col
 
     def _judge_done(self):
         done = False
@@ -366,152 +368,7 @@ class environment(gym.Env):
         描画用の関数
         とりあえずは重要ではないので後回しで
         """
-        if close:
-            if self.viewer is not None:
-                self.viewer.close()
-                self.viewer = None
-            return
-        if self.viewer is None:
-            self.viewer = rendering.Viewer(self.render_width, self.render_height)
-
-            # space = rendering.make_polyline(
-            #     [
-            #         self._space2render((_x, _y)) for _x, _y in zip(
-            #             [SPACE_X_MIN, SPACE_X_MIN, SPACE_X_MAX, SPACE_X_MAX, SPACE_X_MIN],
-            #             [SPACE_Y_MIN, SPACE_Y_MAX, SPACE_Y_MAX, SPACE_Y_MIN, SPACE_Y_MIN]
-            #         )
-            #     ]
-            # )
-            # self.space_tras = rendering.Transform()
-            # space.add_attr(self.space_tras)
-            # space.set_color(0.0,0.0,0.0)
-            # self.viewer.add_geom(space)
-
-            goal = rendering.make_circle(
-                GOAL_RANGE*self.render_scale, filled=False
-            )
-            self.goal_trans = rendering.Transform()
-            goal.add_attr(self.goal_trans)
-            goal.set_color(1.0,140/255,0.0)
-            self.viewer.add_geom(goal)
-
-            l = 0.34
-            own_ship = rendering.FilledPolygon(
-                [
-                    (
-                        _x*l*self.render_scale,
-                        _y*l*self.render_scale
-                    ) for _x, _y in zip(
-                        [-0.25,-0.25, 0.0, 0.25, 0.25],
-                        [-0.5, 0.2, 0.5, 0.2,-0.5],
-                    )
-                ],
-            )
-            self.OwnShipTrans = rendering.Transform()
-            own_ship.add_attr(self.OwnShipTrans)
-            own_ship.set_color(0.99,0.0,0.0)
-            self.viewer.add_geom(own_ship)
-
-            own_SPA = rendering.make_polyline(
-                [
-                    (
-                        ( _x*0.34*1.6 if _x>=0 else _x*0.34*1.6 )*self.render_scale,
-                        ( _y*0.34*6.4 if _y>=0 else _y*0.34*1.6 )*self.render_scale,
-                    ) for _x, _y in zip( np.sin(np.linspace(0,np.pi*2,41)), np.cos(np.linspace(0,np.pi*2,41)) )
-                ],
-            )
-            self.SPATrans = rendering.Transform()
-            own_SPA.add_attr(self.SPATrans)
-            own_SPA.set_color(0.99,0.0,0.0)
-            self.viewer.add_geom(own_SPA)
-
-            oth = []
-            self.OthersTrans = []
-            for _ in range(MAX_OTH_SHIP_NUM):
-                oth.append(
-                    rendering.FilledPolygon(
-                        [
-                            (
-                                _x*l*self.render_scale,
-                                _y*l*self.render_scale
-                            ) for _x, _y in zip(
-                                [-0.25,-0.25, 0.0, 0.25, 0.25],
-                                [-0.5, 0.2, 0.5, 0.2,-0.5],
-                            )
-                        ],
-                    )
-                )
-                self.OthersTrans.append(rendering.Transform())
-                oth[-1].add_attr(self.OthersTrans[-1])
-                oth[-1].set_color(0.0,0.0,0.99)
-                self.viewer.add_geom(oth[-1])
-        
-        
-        own2goal = rendering.Line(
-            start = self._space2render(self.OwnShip.data[:2]),
-            end = self._space2render(self._goal),
-        )
-        own2goal_trans = rendering.Transform()
-        own2goal.add_attr(own2goal_trans)
-        own2goal.set_color(0.99,0.5,0.5)
-        self.viewer.add_onetime(own2goal)
-
-
-        for _idx,(_value_action,_value_state) in enumerate(zip(self.evaluation_action,self.evaluation_state,)):
-            if _value_action is not None:
-                if _idx==0:
-                    x, y = self._space2render(self.OwnShip.data[:2])
-                else:
-                    x, y = self._space2render(self.OtherShips[_idx-1].data[:2])
-                text = 'Action : {:.2f}\nState : {:.2f}'.format(_value_action,_value_state)
-                label = pyglet.text.Label(text, font_size=10,
-                    x=x+7.5, y=y+7.5, anchor_x='left', anchor_y='bottom',
-                    color=(0, 0, 0, 255)
-                )
-                self.viewer.add_onetime(DrawText(label))
-                # self.evaluation[_idx]=None
-                
-
-        self.goal_trans.set_translation(
-            *self._space2render(self._goal)
-        )
-
-        self.OwnShipTrans.set_rotation(-np.radians(self.OwnShip.data[3]))
-        self.OwnShipTrans.set_translation(
-            *self._space2render(self.OwnShip.data[:2])
-        )
-        self.SPATrans.set_rotation(-np.radians(self.OwnShip.data[3]))
-        self.SPATrans.set_translation(
-            *self._space2render(self.OwnShip.data[:2])
-        )
-
-        for idx in range(MAX_OTH_SHIP_NUM):
-            self.OthersTrans[idx].set_rotation(-np.radians(self.OtherShips[idx].data[3]))
-            self.OthersTrans[idx].set_translation(
-                *self._space2render(self.OtherShips[idx].data[:2])
-            )
-        
-        return self.viewer.render(return_rgb_array = mode == 'rgb_array')
-
-    def _space2render(self, posi):
-        """
-        描画用
-        描画自の座標と空間座標を変換する関数
-        """
-        return (
-            (posi[0] - SPACE_CENTER[0])*self.render_scale + self.render_center[0],
-            (posi[1] - SPACE_CENTER[1])*self.render_scale + self.render_center[1],
-        )
-    
-    def set_evaluation(self, evaluation_action, evaluation_state, attention=None):
-        self.evaluation = np.concatenate(
-            [
-                np.expand_dims(evaluation_action,axis=0),
-                evaluation_state
-            ], axis=0
-        ).T
-        if attention is not None:
-            self.attention = attention.flatten()
+        raise NotImplementedError
     
     def _log(self):
         import csv
@@ -527,16 +384,7 @@ class environment(gym.Env):
                             [ f'oth{n:02d}'+l for l in ['_x','_y','_sog', '_hdg', '_rot']]
                             for n in range(self.oth_num)
                         ], []
-                    ) + [
-                            ['Evalu_wp_action',] + ['Evalu_wp_{:.1f}'.format(_a) for _a in np.linspace(-1,1,21)]
-                        ][0] + sum([
-                        [
-                            [f'Evalu{n:02d}_action',] + [f'Evalu{n:02d}_{_a:.1f}' for _a in np.linspace(-1,1,21)]
-                        ][0]
-                        for n in range(self.oth_num)
-                    ], []) + [ f'Attention{n:02d}' for n in range(self.oth_num)]
-                    + ['reward_wp'] + [f'reward_targ{n:02d}' for n in range(self.oth_num) ] +
-                    ['total_reward'] + ['goal_x', 'goal_y']
+                    ) + ['goal_x', 'goal_y']
                 )
         with open('test'+self.exe_time+f'/test_log_{self.episode_count:02d}.csv', 'a', newline='') as f:
             writer = csv.writer(f)
@@ -546,8 +394,7 @@ class environment(gym.Env):
                         self.OtherShips[n].data for n in range(self.oth_num)
                     ],
                     []
-                ) + list(np.array(self.evaluation).flatten()) + list(np.array(self.attention).flatten())
-                + self.rewards_for_log + list(self._goal)
+                ) + list(self._goal)
             )
 
 if __name__=='__main__':
