@@ -1,0 +1,7 @@
+__pycache__/
+# debug様に作ったfileは無視
+debug_*
+*.ipynb
+# 作成した図もあげないように
+*.svg
+*.png
