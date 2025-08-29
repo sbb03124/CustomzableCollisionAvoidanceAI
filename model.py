@@ -5,249 +5,68 @@ from tensorflow.keras.layers import *
 from tensorflow.keras.models import clone_model, Model
 
 
-"""
-現状actorの行動の選択肢は1
-"""
-class Actor(tf.keras.Model):
-    def __init__(self, wp_shape, oth_shape, nb_action, mode='sum'):
-        super().__init__()
-        self.nb_features = 512
-        self.mode=mode
-        self.flatten = Flatten()
-        self.dropout = Dropout(0.1)
-        self.leaky_relu = LeakyReLU(0.1)
-
-        self.hidden_wp_1 = Dense(256, activation='linear',kernel_initializer='he_normal')
-        self.hidden_wp_2 = Dense(256, activation='linear',kernel_initializer='he_normal')
-        self.hidden_wp_3 = Dense(128, activation='linear', kernel_initializer='glorot_normal')
-
-        self.hidden_oth_1 = Dense(256, activation='linear',kernel_initializer='he_normal')
-        self.hidden_oth_2 = Dense(256, activation='linear',kernel_initializer='he_normal')
-        self.hidden_oth_3 = Dense(128, activation='linear', kernel_initializer='glorot_normal')
-
-
-        self.softsign = Activation('softsign')
-
-        self.hidden_actor_1 = Dense(256, activation='linear',kernel_initializer='he_normal')
-        self.hidden_actor_2 = Dense(256, activation='linear',kernel_initializer='he_normal')
-        self.hidden_actor_3 = Dense(128, activation='linear',kernel_initializer='he_normal')
-        self.hidden_actor_4 = Dense(nb_action, activation='softsign',kernel_initializer='glorot_normal')
-
-        self.attention1 = Dense(128, activation='linear',kernel_initializer='he_normal')
-        self.attention2 = Dense(128, activation='linear',kernel_initializer='he_normal')
-        self.attention3 = Dense(1, activation='linear',kernel_initializer='he_normal')
-
-        self.__call__(
-            np.random.random((1,)+wp_shape),
-            np.random.random((1,2,)+oth_shape),
-        )
-
-    def call(self, input_wp, input_oth=None, training=False, attention_score=False):
-        if type(input_wp) != list:
-            input_tensor = True
-            input_wp = [input_wp]
-            input_oth = [input_oth]
-        else:
-            input_tensor = False
-        out = []
-        for idx in range(len(input_wp)):
-            wp = self.leaky_relu(self.hidden_wp_1(self.flatten(input_wp[idx]), training=training), training=training)
-            wp = self.leaky_relu(self.hidden_wp_2(self.dropout(wp, training=training), training=training), training=training)
-            wp = self.hidden_wp_3(self.dropout(wp, training=training), training=training)
-            
-            if input_oth[idx] is not None:
-                oth = self.leaky_relu(self.hidden_oth_1(input_oth[idx], training=training), training=training)
-                oth = self.leaky_relu(self.hidden_oth_2(self.dropout(oth, training=training), training=training), training=training)
-                oth = self.hidden_oth_3(self.dropout(oth, training=training), training=training)
-                
-                alpha = tf.concat(
-                    [
-                        tf.tile(
-                            tf.expand_dims(input_oth[idx], axis=-2),
-                            tf.constant([1,1,input_oth[idx].shape[1],1])
-                        ), tf.tile(
-                            tf.expand_dims(input_oth[idx], axis=-3),
-                            tf.constant([1,input_oth[idx].shape[1],1,1])
-                        )
-                    ], axis=-1
-                )
-                alpha = self.leaky_relu(self.attention1(alpha, training=training), training=training)
-                alpha = self.leaky_relu(self.attention2(self.dropout(alpha), training=training), training=training)
-                alpha = self.leaky_relu(self.attention3(self.dropout(alpha), training=training), training=training)
-                alpha = tf.math.softmax(tf.reduce_sum(tf.reduce_sum(alpha,axis=-1),axis=-1,keepdims=True),axis=-2)
-                _out = self.leaky_relu( wp + tf.reduce_sum(oth*alpha, axis=1 ) )
-            else:
-                _out = self.leaky_relu(wp)
-                alpha=tf.convert_to_tensor(np.array([[]]))
-
-            _out = self.leaky_relu(self.hidden_actor_1(self.dropout(_out, training=training), training=training), training=training)
-            _out = self.leaky_relu(self.hidden_actor_2(self.dropout(_out, training=training), training=training), training=training)
-            _out = self.leaky_relu(self.hidden_actor_3(self.dropout(_out, training=training), training=training), training=training)
-            _out = self.hidden_actor_4(_out, training=training)
-            out.append(_out)
-        
-        if input_tensor:
-            if attention_score:
-                return out[0], alpha
-            else:
-                return out[0]
-        else:
-            if attention_score:
-                return out, alpha
-            else:
-                return out
-
-
-class Critic(tf.keras.Model):
-    def __init__(self, wp_shape, oth_shape, nb_action, mode='sum'):
-        super().__init__()
-        self.mode=mode    
-        self.flatten = Flatten()
-        self.dropout = Dropout(0.1)
-
-        self.hidden_wp_1 = Dense(256, activation='relu',kernel_initializer='he_normal')
-        self.hidden_wp_2 = Dense(256, activation='relu',kernel_initializer='he_normal')
-        self.hidden_wp_3 = Dense(128, activation='relu',kernel_initializer='he_normal')
-        self.hidden_wp_4 = Dense(  1, activation='linear', kernel_initializer='glorot_normal' )
-
-        self.hidden_oth_1 = Dense(256, activation='relu',kernel_initializer='he_normal')
-        self.hidden_oth_2 = Dense(256, activation='relu',kernel_initializer='he_normal')
-        self.hidden_oth_3 = Dense(128, activation='relu',kernel_initializer='he_normal')
-        self.hidden_oth_4 = Dense(  1, activation='linear',kernel_initializer='glorot_normal')
-
-        self.__call__(
-            np.random.random((2,nb_action)),
-            np.random.random((2,)+wp_shape),
-            np.random.random((2,2,)+oth_shape),
-        )
-
-
-
-    def call(self, action_input, input_wp, input_oth=None, training=False):
-        if type(input_wp) != list:
-            input_tensor = True
-            input_wp = [input_wp]
-            input_oth = [input_oth]
-            action_input = [action_input]
-        else:
-            input_tensor = False
-        out = []
-        _len=0
-        for idx in range(len(input_wp)):
-            wp = self.hidden_wp_1(
-                tf.concat([self.flatten(input_wp[idx]), action_input[idx]], axis=1),
-                training=training
-            )
-            wp = self.hidden_wp_2(self.dropout(wp, training=training), training=training)
-            wp = self.hidden_wp_3(self.dropout(wp, training=training), training=training)
-            wp = self.hidden_wp_4(wp, training=training)
-            
-            if input_oth[idx] is not None:
-                oth = self.hidden_oth_1(
-                    tf.concat(
-                        [
-                            input_oth[idx],
-                            tf.tile(
-                                tf.expand_dims(action_input[idx], -1),
-                                tf.constant([1,input_oth[idx].shape[1],1,]),
-                            ),
-                        ], axis=-1
-                    ),
-                    training=training
-                )
-                oth = self.hidden_oth_2(self.dropout(oth, training=training), training=training)
-                oth = self.hidden_oth_3(self.dropout(oth, training=training), training=training)
-                oth = self.hidden_oth_4(oth, training=training)
-                oth = tf.reduce_sum(oth, axis=1)
-                _out = wp + oth
-            else:
-                _out = wp
-
-            out.append(_out)
-        return tf.concat(out, axis=0)
-    
-    def evalu(self, action_tensor, wp_tensor, oth_tensor=None):
-        
-        wp = self.hidden_wp_1(
-            tf.concat([self.flatten(wp_tensor), action_tensor], axis=1),
-            training=False
-        )
-        wp = self.hidden_wp_2(self.dropout(wp, training=False), training=False)
-        wp = self.hidden_wp_3(self.dropout(wp, training=False), training=False)
-        wp = self.hidden_wp_4(wp, training=False)
-        
-        if oth_tensor is not None:
-            oth = self.hidden_oth_1(
-                tf.concat(
-                    [
-                        oth_tensor,
-                        tf.tile(
-                            tf.expand_dims(action_tensor, -1),
-                            tf.constant([1,oth_tensor.shape[1],1,]),
-                        ),
-                    ], axis=-1
-                ),
-                training=False
-            )
-            oth = self.hidden_oth_2(self.dropout(oth, training=False), training=False)
-            oth = self.hidden_oth_3(self.dropout(oth, training=False), training=False)
-            oth = self.hidden_oth_4(oth, training=False)
-            return tf.concat([wp, tf.squeeze(oth, [-1])], axis=1)
-        else:
-            return wp
-
-def MLP(wp_shape, oth_shape, act_shape, nb_features=512):
-    # encoder
-    actor = Actor(wp_shape, oth_shape, len(act_shape))
-    critic = Critic(wp_shape, oth_shape, len(act_shape))
-
-    return actor, critic
-
 class Memory():
     def __init__(self, maxlen, window_length):
         self.window_length = window_length
         self.state0 = deque(maxlen=maxlen)
+        self.state0_next = deque(maxlen=maxlen)
         self.state1 = deque(maxlen=maxlen)
-        self.reward = deque(maxlen=maxlen)
+        self.state1_next = deque(maxlen=maxlen)
+        self.reward0 = deque(maxlen=maxlen)
+        self.reward1 = deque(maxlen=maxlen)
         self.done = deque(maxlen=maxlen)
         self.action = deque(maxlen=maxlen)
 
-    def append(self, s, s_next, r, d, a):
+    def append(self, s0, s0_next, s1, s1_next, r0, r1, d, a):
         if self.window_length is None:
-            self.state0.append(s)
-            self.state1.append(s_next)
-            self.reward.append(r)
+            self.state0.append(s0)
+            self.state0_next.append(s0_next)
+            self.state1.append(s1)
+            self.state1_next.append(s1_next)
+            self.reward0.append(r0)
+            self.reward1.append(r1)
             self.done.append(d)
             self.action.append(a)
         else:
             if len(self.done)>=1 and not self.done[-1]:
-                state0 = list(self.state0[-1][1:]) + [s]
-                state1 = list(self.state1[-1][1:]) + [s_next]
+                state0 = list(self.state0[-1][1:]) + [s0]
+                state0_next = list(self.state0_next[-1][1:]) + [s0_next]
+
+                state1 = list(self.state1[-1][1:]) + [s1]
+                state1_next = list(self.state1_next[-1][1:]) + [s1_next]
+
             else:
                 # print('zeros_like')
-                state0 = [np.zeros_like(s) for _ in range(self.window_length-1)] + [s]
-                state1 = [np.zeros_like(s) for _ in range(self.window_length-2)] + [s,s_next]
+                state0 = [np.zeros_like(s0) for _ in range(self.window_length-1)] + [s0]
+                state0_next = [np.zeros_like(s0) for _ in range(self.window_length-2)] + [s0,s0_next]
+
+                state1 = [np.zeros_like(s1) for _ in range(self.window_length-1)] + [s1]
+                state1_next = [np.zeros_like(s1) for _ in range(self.window_length-2)] + [s1,s1_next]
             
             self.state0.append(np.array(state0))
+            self.state0_next.append(np.array(state0_next))
             self.state1.append(np.array(state1))
-            self.reward.append(r)
+            self.state1_next.append(np.array(state1_next))
+            self.reward0.append(r0)
+            self.reward1.append(r1)
             self.done.append(d)
             self.action.append(a)
 
     def get_recent_obs(self, obs):
         if self.window_length is None:
             return obs
-        state = [obs]
+        state0, state1 = obs
         if len(self.done)>=1 and not self.done[-1]:
-            # print('reuse')
-            # print(self.state0[-1])
-            state = list(self.state0[-1][1:]) + state
+            state0 = list(self.state0[-1][1:]) + state0
+            state1 = list(self.state1[-1][1:]) + state1
         else:
             # print('zeros_like')
-            state = [np.zeros_like(obs) for _ in range(self.window_length-1)] + state
-        state = np.array(state)
+            state0 = [np.zeros_like(state0) for _ in range(self.window_length-1)] + state0
+            state1 = [np.zeros_like(state1) for _ in range(self.window_length-1)] + state1
+        state0 = np.array(state0)
+        state1 = np.array(state1)
         # print(state.shape)
-        return state
+        return state0, state1
     
     def get_sample_idx(self, num):
         idxs = np.random.randint(
@@ -263,11 +82,20 @@ class Memory():
     
     def __getitem__(self, idx):
         if type(idx) is int:
-            return [self.state0[idx], self.state1[idx], self.reward[idx], self.done[idx], self.action[idx]]
+            return [
+                self.state0[idx], self.state0_next[idx],
+                self.state1[idx], self.state1_next[idx],
+                self.reward0[idx], self.reward1[idx],
+                self.done[idx], self.action[idx]
+            ]
         else:
             return [
-                [self.state0[i], self.state1[i], self.reward[i], self.done[i], self.action[i]]
-                for i in idx
+                [
+                    self.state0[i], self.state0_next[i],
+                    self.state1[i], self.state1_next[i],
+                    self.reward0[i], self.reward1[i],
+                    self.done[i], self.action[i]
+                ] for i in idx
             ]
 
 class OrnsteinUhlenbeckProcess():
@@ -320,15 +148,6 @@ def update_target(target_weights, weights, tau):
     for (a, b) in zip(target_weights, weights):
         a.assign(b * tau + a * (1 - tau))
 
-@tf.function
-def train_step(model, _ins, _ture, loss_func, optimizer):
-    with tf.GradientTape() as tape:
-        preds = model(_ins)
-        loss = loss_func(_ture, preds)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return loss
-
 class Agent():
     def __init__(self,
         actor_nn, critic_nn, actor_target_nn, critic_target_nn,
@@ -362,35 +181,34 @@ class Agent():
         assert self.critic_opt!=self.actor_opt
 
     def train(self, train_actor=True, trian_critic=True, smoothing_gain=0):
-        raise NotImplementedError
         sample_idx = self.memory.get_sample_idx(self.batch_size)
         
         exp = self.memory[sample_idx]
-        # state0 = [exp[n][0] for n in range(self.batch_size)]
-        # state1 = [exp[n][1] for n in range(self.batch_size)]
-        # rewards = [[exp[n][2]] for n in range(self.batch_size)]
-        # done = [[exp[n][3]] for n in range(self.batch_size)]
-        # action = [[exp[n][4]] for n in range(self.batch_size)]
-        
+
         shape2idx = []
         state0 = []
+        state0_next = []
         state1 = []
-        rewards = []
+        state1_next = []
+        reward0 = []
+        reward1 = []
         done = []
         action = []
         oth_input_num = 10
         for n in range(self.batch_size):
-            shape = np.array(exp[n][0]).shape
+            shape = np.array(exp[n][2]).shape
             if shape not in shape2idx:
                 shape2idx.append(shape)
                 state0.append([])
+                state0_next.append([])
                 state1.append([])
-                rewards.append([])
+                state1_next.append([])
+                reward0.append([])
+                reward1.append([])
                 done.append([])
                 action.append([])
             idx = shape2idx.index(shape)
             if len(state0[idx])==0:
-                oth_num = int( (shape[1]-3)/oth_input_num )
                 state0[idx].append(
                     [exp[n][0][:,:3]]
                 )

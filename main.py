@@ -27,9 +27,7 @@ def main(visualize, reward_params):
     smoothing_wormup = int(nb_trainstep*0.8)
     smoothing_gain = 0
 
-    log_file = 'params_{}_{}_{}_{}_{}_log'.format(
-        *reward_params
-    ).replace('.','-') + '.csv'
+    log_file = 'log.csv'
 
     ######################################################
     env = environment.environment(reward_params)
@@ -38,16 +36,17 @@ def main(visualize, reward_params):
 
 
     agent = model.Agent(
-        wp_shape = (5,3),
-        oth_shape = (5*10,),
-        act_shape = (1,),
+        actor_nn,
+        critic_nn,
+        actor_target_nn,
+        critic_target_nn,
         random = model.OrnsteinUhlenbeckProcess(
             size=act_n,
             theta=0.01,
             mu=0.0,
             dt=1, # 15.0から変更
             sigma=0.40, # 0.06から変更
-            sigma_min=0.0,
+            sigma_min=0.02,
             n_steps_annealing=int(nb_trainstep*1.0),
             nb_wormup = int(nb_trainstep*0.2)
         ),
