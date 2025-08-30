@@ -52,10 +52,10 @@ class Memory():
             self.done.append(d)
             self.action.append(a)
 
-    def get_recent_obs(self, obs):
+    def get_recent_obs(self, state0, state1):
         if self.window_length is None:
-            return obs
-        state0, state1 = obs
+            return state0, state1
+
         if len(self.done)>=1 and not self.done[-1]:
             state0 = list(self.state0[-1][1:]) + state0
             state1 = list(self.state1[-1][1:]) + state1
@@ -180,7 +180,7 @@ class Agent():
 
         assert self.critic_opt!=self.actor_opt
 
-    def train(self, train_actor=True, trian_critic=True, smoothing_gain=0):
+    def train(self, train_actor=True, trian_critic=True,):
         sample_idx = self.memory.get_sample_idx(self.batch_size)
         
         exp = self.memory[sample_idx]
@@ -193,10 +193,12 @@ class Agent():
         reward0 = []
         reward1 = []
         done = []
-        action = []
-        oth_input_num = 10
+        action0 = []
         for n in range(self.batch_size):
             shape = np.array(exp[n][2]).shape
+            oth_num = shape[1]
+            # datanum = shape[0]*shape[2]
+            datanum = shape[0]*10
             if shape not in shape2idx:
                 shape2idx.append(shape)
                 state0.append([])
@@ -206,77 +208,37 @@ class Agent():
                 reward0.append([])
                 reward1.append([])
                 done.append([])
-                action.append([])
+                action0.append([])
+                
             idx = shape2idx.index(shape)
-            if len(state0[idx])==0:
-                state0[idx].append(
-                    [exp[n][0][:,:3]]
-                )
-                state1[idx].append(
-                    [exp[n][1][:,:3]]
-                )
-                if oth_num>0:
-                    state0[idx].append(
-                        [
-                            [
-                                exp[n][0][:,3+oth_idx*oth_input_num:3+(1+oth_idx)*oth_input_num].flatten()
-                                for oth_idx in range(oth_num)
-                            ]
-                        ]
-                    )
-                    state1[idx].append(
-                        [
-                            [
-                                exp[n][1][:,3+oth_idx*oth_input_num:3+(1+oth_idx)*oth_input_num].flatten()
-                                for oth_idx in range(oth_num)
-                            ]
-                        ]
-                    )
-                else:
-                    state0[idx].append(None)
-                    state1[idx].append(None)
-            else:
-                oth_num = int( (shape[1]-3)/oth_input_num )
-                state0[idx][0].append( exp[n][0][:,:3] )
-                state1[idx][0].append( exp[n][1][:,:3] )
-                if oth_num>0:
-                    state0[idx][1].append(
-                        [
-                            exp[n][0][:,3+oth_idx*oth_input_num:3+(1+oth_idx)*oth_input_num].flatten()
-                            for oth_idx in range(oth_num)
-                        ]
-                    )
-                    state1[idx][1].append(
-                        [
-                            exp[n][1][:,3+oth_idx*oth_input_num:3+(1+oth_idx)*oth_input_num].flatten()
-                            for oth_idx in range(oth_num)
-                        ]
-                    )
-            rewards[idx].append(exp[n][2])
-            done[idx].append(exp[n][3])
-            action[idx].append(exp[n][4])
-
-        state0 = [ [tf.convert_to_tensor(np.array(_s), dtype=np.float32) if _s is not None else None for _s in s ] for s in state0]
-        state1 = [ [tf.convert_to_tensor(np.array(_s), dtype=np.float32) if _s is not None else None for _s in s ] for s in state1]
-        rewards = [tf.convert_to_tensor(np.array(r).reshape((len(r),1)), dtype=np.float32) for r in rewards]
-        action0 = [tf.convert_to_tensor(np.array(a).reshape((len(a),1)), dtype=np.float32) for a in action]
+            #################################################
+            state0[idx].append( exp[n][0].flatten() )
+            state0_next[idx].append( exp[n][1].flatten() )
+            state1[idx].append(
+                np.concatenate( [ s for s in exp[n][2] ], axis=-1 ).rehsape((oth_num,datanum))
+            )
+            state1_next[idx].append(
+                np.concatenate( [ s for s in exp[n][3] ], axis=-1 ).rehsape((oth_num,datanum))
+            )
+            reward0[idx].append( exp[n][4] )
+            reward1[idx].append( exp[n][5] )
+            done[idx].append( exp[n][6] )
+            action0[idx].append( exp[n][7] )
+            #################################################
+            
+        state0 = [tf.convert_to_tensor(np.array(s), dtype=np.float32) for s in state0 ]
+        state0_next = [tf.convert_to_tensor(np.array(s), dtype=np.float32) for s in state0_next ]
+        state1 = [tf.convert_to_tensor(np.array(s), dtype=np.float32) for s in state1 ]
+        state1_next = [tf.convert_to_tensor(np.array(s), dtype=np.float32) for s in state1_next ]
+        reward0 = [tf.convert_to_tensor(np.array(r).reshape((len(r),1)), dtype=np.float32) for r in reward0 ]
+        reward1 = [tf.convert_to_tensor(np.array(r).reshape((len(r),1)), dtype=np.float32) for r in reward1 ]
+        action0 = [tf.convert_to_tensor(np.array(a).reshape((len(a),1)), dtype=np.float32) for a in action0]
         # Trueが1なので，0になるように引き算
         done = [tf.convert_to_tensor((1 - np.array(d)).reshape((len(d),1)), dtype=np.float32) for d in done]
         
-        action1 = [
-            tf.convert_to_tensor(
-                a.numpy().reshape((int(a.numpy().size/self.action_num),self.action_num)),
-                dtype=np.float32
-            )
-            for a in  self.actor_target(
-                [ s[0] for s in state1],
-                [ s[1] for s in state1],
-            )
-        ]
-        
         losses = self.update(
-            state0, state1, rewards, done, action0, action1,
-            train_actor=train_actor, trian_critic=trian_critic, smoothing_gain=smoothing_gain
+            state0, state0_next, state1, state1_next, reward0, reward1, action0, done,
+            train_actor=train_actor, trian_critic=trian_critic,
         )
 
 
@@ -297,239 +259,118 @@ class Agent():
             tau
         )
     
-    def update(self, state0, state1, reward, done, actions0, actions1, train_actor=True, trian_critic=True, smoothing_gain=0):
-        raise NotImplementedError
-        #update critic
-        reward_concat = tf.concat(reward, axis=0)
-        done_concat = tf.concat(done, axis=0)
-        actions0_concat = tf.concat(actions0, axis=0)
-        actions0_concat_noised = actions0_concat
-        actions1_concat = tf.concat(actions1, axis=0)
-
-        state0_input_wp = [ s[0] for s in state0 ]
-        state0_input_oth = [ s[1] for s in state0 ]
-        
-        state1_input_wp = [ s[0] for s in state1 ]
-        state1_input_oth = [ s[1] for s in state1 ]
-        
-        state0_input_wp_noise  = [ s[0] + tf.random.normal(s[0].shape,0,0.02) if s[0] is not None else None for s in state0  ]
-        state0_input_oth_noise = [ s[1] + tf.random.normal(s[1].shape,0,0.02) if s[1] is not None else None for s in state0  ]
-        actions0_noised = [ _a + tf.random.normal(_a.shape,0,0.02) for _a in actions0]
-        # state1_input_wp_noise = [ s[0] + tf.random.normal(s[0].shape,0,0.05) for s in state1 ]
-        # state1_input_oth_noise = [ s[1] + tf.random.normal(s[1].shape,0,0.05) for s in state1 ]
-        
-        with tf.GradientTape() as tape:
-            target_reward = tf.stop_gradient(
-                reward_concat + done_concat*self.gamma*self.critic_target(actions1, state1_input_wp, state1_input_oth, training=False)
-            )
-            critic_loss = self.critic_loss(
-                self.critic(
-                    # actions0,
-                    actions0_noised,
-                    state0_input_wp,
-                    state0_input_oth,
-                    training=True,
-                ),
-                target_reward
-            )
-
-            # l2 normalize
-            loss_reg_critic = 0
-            for var in self.critic.trainable_variables:
-                if 'bias' not in var.name:
-                    loss_reg_critic += tf.reduce_mean(tf.square(var))
-            
-            critic_loss += loss_reg_critic*1e-4
-
-            Lt = tf.reduce_mean(
-                tf.square(
-                    tf.stop_gradient(
-                        self.critic(
-                            actions0,
-                            state0_input_wp,
-                            state0_input_oth,
-                            training=True,
-                        )
-                    ) - self.critic(
-                        actions0_noised,
-                        state0_input_wp,
-                        state0_input_oth,
-                        training=True,
-                    )
-                )
-            ) + tf.reduce_mean(
-                tf.square(
-                    tf.stop_gradient(
-                        self.critic(
-                            actions0,
-                            state0_input_wp,
-                            state0_input_oth,
-                            training=True,
-                        )
-                    ) - self.critic(
-                        actions1,
-                        state1_input_wp,
-                        state1_input_oth,
-                        training=True,
-                    )
-                )
-            )
-            critic_loss += Lt*1e-2
-
-        critic_grad = tape.gradient(
-            critic_loss, self.critic.trainable_variables
-        )
-        if self.grad_cliping is not None:
-            critic_grad = [
-                None if gradient is None else tf.clip_by_norm(gradient, self.grad_clipping)
-                for gradient in critic_grad
-            ]
+    def update(self, state0, state0_next, state1, state1_next, reward0, reward1, action0, done, train_actor=True, trian_critic=True,):
         if trian_critic:
+            with tf.GradientTape() as tape:
+                critic_loss = 0
+                for s0, s0_next, s1, s1_next, r0, r1, a0, d in zip(
+                    state0, state0_next, state1, state1_next, reward0, reward1, action0, done
+                ):
+                    target_reward0 = tf.stop_gradient(
+                        tf.concat(
+                            [
+                                (
+                                    r0  + d*self.gamma*self.critic_target(
+                                        s0_next, s1_next, self.actor_target( s0, s1, gain=0.0 )
+                                    )[:,0:1]
+                                ),
+                                (
+                                    r1  + d*self.gamma*self.critic_target(
+                                        s0_next, s1_next, self.actor_target( s0, s1, gain=1.0 )
+                                    )[:,1:2]
+                                )
+                            ], axis=-1
+                        )
+                    )
+
+                    pred = self.critic( s0, s1, a0 )
+
+                    trian_critic = trian_critic + tf.sqrt(
+                        tf.reduce_mean(
+                            tf.square(
+                                target_reward0 - pred
+                            )
+                        )
+                    )
+                
+                # l2 normalize
+                loss_reg_critic = 0
+                for var in self.critic.trainable_variables:
+                    if 'bias' not in var.name:
+                        loss_reg_critic += tf.reduce_mean(tf.square(var))
+                
+                critic_loss += loss_reg_critic*1e-4
+                
+
+            critic_grad = tape.gradient(
+                critic_loss, self.critic.trainable_variables
+            )
+            if self.grad_cliping is not None:
+                critic_grad = [
+                    None if gradient is None else tf.clip_by_norm(gradient, self.grad_clipping)
+                    for gradient in critic_grad
+                ]
             self.critic_opt.apply_gradients(
                 zip(critic_grad, self.critic.trainable_variables)
             )
-        
-    
-        #update actor
-        with tf.GradientTape() as tape:
-            # j_pi
-            actor_out = self.actor(
-                state0_input_wp,
-                state0_input_oth,
-                training=True
-            )
-            pred = self.critic(
-                actor_out,
-                state0_input_wp,
-                state0_input_oth,
-                training=False
-            )
-            loss_j_pi = -tf.reduce_mean(pred)
 
+        else:
+            critic_loss = None
+
+        if train_actor:
+            #update actor
+            gain = np.random.uniform(low=0,high=1)
+            
+            actor_loss = 0
+            for s0, s0_next, s1, s1_next, r0, r1, a0, d in zip(
+                    state0, state0_next, state1, state1_next, reward0, reward1, action0, done
+                ):
+                
+                pred_q = self.critic( s0, s1, self.actor(s0, s1, gain=gain) )
+                actor_loss = actor_loss + ( - tf.reduce_mean( (1-gain)*pred_q[:,0:1] + gain*pred_q[:,1:2] ) )
+                
             # l2 normalize
             loss_reg_actor = 0
             for var in self.actor.trainable_variables:
                 if 'bias' not in var.name:
                     loss_reg_actor += tf.reduce_mean(tf.square(var))
-            
-            actor_loss = loss_j_pi + loss_reg_actor*1e-3
 
-            # smoothing
-            next_ = self.actor(
-                state1_input_wp,
-                state1_input_oth,
+            actor_grad = tape.gradient(
+                actor_loss, self.actor.trainable_variables
             )
-            noised_ = self.actor(
-                state0_input_wp_noise,
-                state0_input_oth_noise,
-            )
-            
-            if type(actor_out) is list:
-                Lt = tf.sqrt(
-                    tf.reduce_mean(
-                        tf.square(
-                            tf.concat(actor_out, axis=0) - tf.concat(next_, axis=0)
-                        )
-                    )
-                ) + tf.sqrt(
-                    tf.reduce_mean(
-                        tf.square(
-                            tf.concat(actor_out, axis=0) - tf.concat(noised_, axis=0)
-                        )
-                    )
-                )    
-            else:
-                Lt = tf.sqrt(tf.reduce_mean(tf.square(actor_out - next_))) + tf.sqrt(tf.reduce_mean(tf.square(actor_out - noised_)))
+            if self.grad_cliping is not None:
+                actor_grad = [
+                    None if gradient is None else tf.clip_by_norm(gradient, self.grad_clipping)
+                    for gradient in actor_grad
+                ]
 
-            actor_loss += Lt*1e-2
-            
-        
-        actor_grad = tape.gradient(
-            actor_loss, self.actor.trainable_variables
-        )
-        if self.grad_cliping is not None:
-            actor_grad = [
-                None if gradient is None else tf.clip_by_norm(gradient, self.grad_clipping)
-                for gradient in actor_grad
-            ]
-        if train_actor:
             self.actor_opt.apply_gradients(
                 zip(actor_grad, self.actor.trainable_variables)
             )
 
-
-        self.grad_info = [[],[]]
-        for name, grad in zip(self.actor.trainable_weights, actor_grad):
-            self.grad_info[0] += ['(Actor)'+name.name+'_min', '(Actor)'+name.name+'_max', '(Actor)'+name.name+'_mean']
-            self.grad_info[1] += [grad.numpy().min(), grad.numpy().max(), grad.numpy().mean()]
-        for name, grad in zip(self.critic.trainable_weights, critic_grad):
-            self.grad_info[0] += ['(Critic)'+name.name+'_min', '(Critic)'+name.name+'_max', '(Critic)'+name.name+'_mean']
-            self.grad_info[1] += [grad.numpy().min(), grad.numpy().max(), grad.numpy().mean()]
+        else:
+            actor_loss = None
 
         return actor_loss, critic_loss
 
-    def append(self, s, s_next, r, d, a):
-        raise NotImplementedError
+    def append(self, s0, s0_next, s1, s1_next, r0, r1, d, a):
         self.memory.append(
-            s, s_next, r, d, a
+            s0, s0_next, s1, s1_next, r0, r1, d, a
         )
 
-    def get_action(self, state, evalu=False, features=False, attention_score=False):
-        raise NotImplementedError
-        _in = self.memory.get_recent_obs(state)
-        # act = self.actor.predict( [np.array([_in])] ).flatten()[0]
-        oth_input_num = 10
-        wp = np.array(_in)[:,:3]
-        if int((_in.shape[1]-3)/oth_input_num) > 0:
-            oth = np.array(
-                [
-                    np.array(_in)[:,3+oth_input_num*n:3+oth_input_num*(n+1)].flatten()
-                    for n in range(int((_in.shape[1]-3)/oth_input_num))
-                ]
-            )
-        else:
-            oth = None
-        if attention_score:
-            act, alpha = self.actor(
-                np.array([wp]),
-                np.array([oth]) if oth is not None else None,
-                attention_score = attention_score
-            )
-            act = act.numpy()[0]
-            alpha = alpha.numpy()[0].flatten()
-        else:
-            act = self.actor(
-                np.array([wp]),
-                np.array([oth]) if oth is not None else None,
-            ).numpy()[0]
+    def get_action(self, state0, state1, gain=None):
+        inputs_ = self.memory.get_recent_obs(state0, state1)
+
+        if gain is None:
+            gain = np.random.uniform(low=0,high=1)
+
+        act = self.actor(state0,state1,gain).numpy().flatten()
 
         if self.training:
             noise = self.random.sample()
             act += noise
-        act = np.clip(act, -1, 1)
-        if evalu:
-            evalu = self.critic.evalu(
-                np.array([act]),
-                np.array([wp]),
-                np.array([oth]) if oth is not None else None,
-            ).numpy()[0]
 
-            state_actions = np.array(
-                [
-                    self.critic.evalu(
-                        np.array([np.full(act.shape,_a)]),
-                        np.array([wp]),
-                        np.array([oth]) if oth is not None else None,
-                    ).numpy()[0] for _a in np.linspace(-1,1,21)
-                ]
-            )
-            if attention_score:
-                return act, evalu, state_actions, alpha
-            else:
-                return act, evalu, state_actions
-
-        else:
-            return act
+        return noise
     
     def load_weights(self, fname):
         self.actor.load_weights(
