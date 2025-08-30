@@ -260,6 +260,7 @@ class Agent():
         )
     
     def update(self, state0, state0_next, state1, state1_next, reward0, reward1, action0, done, train_actor=True, trian_critic=True,):
+        losses = {}
         if trian_critic:
             with tf.GradientTape() as tape:
                 critic_loss = 0
@@ -314,8 +315,7 @@ class Agent():
                 zip(critic_grad, self.critic.trainable_variables)
             )
 
-        else:
-            critic_loss = None
+            losses['critic_loss'] = critic_loss.numpy()
 
         if train_actor:
             #update actor
@@ -347,11 +347,9 @@ class Agent():
             self.actor_opt.apply_gradients(
                 zip(actor_grad, self.actor.trainable_variables)
             )
+            losses['actor_loss'] = actor_loss.numpy()
 
-        else:
-            actor_loss = None
-
-        return actor_loss, critic_loss
+        return losses
 
     def append(self, s0, s0_next, s1, s1_next, r0, r1, d, a):
         self.memory.append(

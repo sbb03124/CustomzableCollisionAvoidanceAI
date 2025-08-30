@@ -5,7 +5,9 @@ import numpy as np
 from copy import deepcopy
 from datetime import datetime
 
-def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_critic, weight_save_interval, log_file = None, visualize=False, smoothing_wormup=None, smoothing_gain=0):
+import wandb
+
+def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_critic, weight_save_interval, log_file = None, visualize=False, ):
     timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
     save_dir = 'log'+timestamp
     if log_file is not None:
@@ -13,10 +15,17 @@ def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_c
     os.makedirs(save_dir, exist_ok=True)
     train_start = datetime.now()
 
+
+    wandblogger = wandb.init(
+        project='customize_ca',
+        name=datetime.now().strftime('customize-%Y%m%d%H%M%S%f')
+    )
+
     done = True
     episode=0
     step = 0
-    log_reward = [ ]
+    log_reward0 = [ ]
+    log_reward1 = [ ]
     log_states0  = [ ]
     log_states1  = [ ]
     log_done  = [ ]
@@ -26,15 +35,10 @@ def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_c
     if log_file is not None:
         log_file = save_dir + '/' +log_file
         with open(log_file, 'w', newline='') as f:
-            cols = ['episode', 'steps', 'reward', 'actor_loss', 'critic_loss']
-            for name in agent.actor.trainable_weights:
-                cols += [
-                    name.name+'_min', name.name+'_max', name.name+'_mean'
-                ]
-            for name in agent.critic.trainable_weights:
-                cols += [
-                    name.name+'_min', name.name+'_max', name.name+'_mean'
-                ]
+            cols = ['episode', 'steps', 'reward0',  'reward0', 'task_gain', ]
+
+            # 'actor_loss', 'critic_loss'
+            
             writer = csv.writer(f)
             writer.writerow(cols)
     try:
@@ -45,23 +49,38 @@ def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_c
                 episode += 1
                 episode_step = 0
                 done = False
-                state0 = env.reset()
+                state0, state1 = env.reset()
                 log_action = [ ]
-                log_reward = [ ]
-                log_states0  = [ ]
-                log_states1  = [ ]
+                log_reward0 = [ ]
+                log_reward1 = [ ]
+                log_states0  = [ state0, ]
+                log_states1  = [ state1, ]
                 log_done  = [ ]
                 if visualize: env.render()
                 time_flagment = time.perf_counter()
-            episode_step += 1
-            action = agent.get_action(state0)
 
-            state1, reward, done, _ = env.step(action)
+                task_gain = np.random.uniform(low=0,high=1)
+            
+            episode_step += 1
+            action = agent.get_action(state0, state1, gain=task_gain)
+
+            (state0_next,state1_next,), (reward0,reward1), done, _ = env.step(action)
             if visualize: env.render()
 
-            agent.append( state0, state1, reward, done, action )
+            agent.append( 
+                s0 = state0,
+                s0_next = state0_next,
+                s1 = state1,
+                s1_next = state1_next,
+                r0 = reward0,
+                r1 = reward1,
+                d = done,
+                a = action,
+                # state0, state1, reward, done, action
+            )
             log_action.append(action)
-            log_reward.append(reward)
+            log_reward0.append(reward0)
+            log_reward1.append(reward1)
             log_done.append(done)
             log_states0.append(state0)
             log_states1.append(state1)
@@ -70,22 +89,36 @@ def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_c
             
             if done:
                 print(f'episode : {episode} [ {step}/{nb_trainstep} ({step/nb_trainstep*100:06.2f}%) ]')
-                print('step per second > {:.1f}'.format(episode_step/(time.perf_counter()-time_flagment)))
+                step_p_sec=episode_step/(time.perf_counter()-time_flagment)
+                print('step per second > {:.1f}'.format(step_p_sec))
                 log_data = [episode]
 
                 text = f''
                 text += f'[steps:{len(log_done)}]'
-                text += f'[reward {sum(log_reward):7.2f}]'
+                text += f'[reward0: {sum(log_reward0):7.2f}]'
+                text += f'[reward1: {sum(log_reward1):7.2f}]'
                 text += f'[action : {np.array(log_action).min():3.1f}~{np.array(log_action).max():3.1f}]'
-                text += f'[state : {np.array(log_states0).min():.2f}~{np.array(log_states0).max():.2f}]'
-                text += f'[reward : {np.array(log_reward).min():.2f}~{np.array(log_reward).max():.2f}]'
+                text += f'[state0 : {np.array(log_states0).min():.2f}~{np.array(log_states0).max():.2f}]'
+                text += f'[state1 : {np.array(log_states1).min():.2f}~{np.array(log_states1).max():.2f}]'
                 print(text)
                 
                 log_data += [
-                    len(log_done), sum(log_reward), losses[0], losses[1]
+                    len(log_done), sum(log_reward0), sum(log_reward1), task_gain,
                 ]
-                log_data += agent.grad_info[1]
                 print('\n')
+
+
+                wandblogger.log(
+                    {
+                        'episode/step_per_seconds':step_p_sec,
+                        'episode/steps':len(log_done),
+                        'episode/reward':sum(reward0)+sum(reward1),
+                        'episode/reward0':sum(reward0),
+                        'episode/reward1':sum(reward1),
+                        'episode/Estimated Remaining time (sec)':(nb_trainstep-step)/(step_p_sec+1e-12),
+                    }
+                )
+                
                 if log_file is not None:
                     with open(log_file, 'a', newline='') as f:
                         writer = csv.writer(f)
@@ -94,20 +127,24 @@ def train(agent, env, nb_trainstep, train_interval, nb_wormup_actor, nb_wormup_c
 
             if step%train_interval == 0 and (step>=nb_wormup_actor or step>=nb_wormup_critic):
                 print('[update start]')
-                actor_loss, critic_loss = agent.train(
-                    train_actor=(step>=nb_wormup_actor)and(step%(train_interval*2)==0), trian_critic=step>=nb_wormup_critic,
-                    smoothing_gain = smoothing_gain if (smoothing_wormup is not None)and(step>smoothing_wormup) else 0
+                losses = agent.train(
+                    train_actor=(step>=nb_wormup_actor)and(step%(train_interval*2)==0),
+                    trian_critic=step>=nb_wormup_critic,
                 )
                 print(
                     'actor_loss {} ({}), critic_loss {} ({})'.format(
-                        f'{actor_loss.numpy():.5f}' if actor_loss is not None else 'None',
+                        '{:.5f}'.format(losses['actor_loss']) if 'actor_loss' in losses.keys() else 'None',
                         'training' if step>=nb_wormup_actor else 'warming',
-                        f'{critic_loss.numpy():.5f}' if critic_loss is not None else 'None',
+                        '{:.5f}'.format(losses['critic_loss']) if 'critic_loss' in losses.keys() else 'None',
                         'training' if step>=nb_wormup_critic else 'warming',
                     )
                 )
-                losses[0] = actor_loss.numpy() if (actor_loss is not None and step>=nb_wormup_actor) else None
-                losses[1] = critic_loss.numpy() if (critic_loss is not None and step>=nb_wormup_critic) else None
+
+                wandblogger.log(
+                    {
+                        'losses/{}'.format(item[0]):item[1] for item in losses.items
+                    }
+                )
 
                 print('[update end]')
 

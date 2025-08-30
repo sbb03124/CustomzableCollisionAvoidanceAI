@@ -179,7 +179,6 @@ class environment(gym.Env):
     def step(self, action):
         self.sim_time += self.step_dt
         done = False
-        reward = 0
         # 自船の動きを計算
         ## 舵角を代入
         rudder = action[0]*5
@@ -191,10 +190,9 @@ class environment(gym.Env):
         [ oth.step(0, STEP_DT) for oth in self.OtherShips]
         
         # 報酬を計算
-        reward += self._cal_reward()
+        reward = self._cal_reward()
         # 衝突の判定
         done, r = self._judge_done()   
-        reward += r    
         ##############################################################################################
         if self.test_mode: self._log()
         ##############################################################################################
