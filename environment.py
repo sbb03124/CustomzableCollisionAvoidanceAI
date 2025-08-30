@@ -60,7 +60,8 @@ class environment(gym.Env):
         self.test_mode = False
         # action space & observation space
         self.action_space = gym.spaces.Box(low = -np.ones((1,)), high = np.ones((1,)))
-        self.observation_space = gym.spaces.Box(low = -np.ones(3+10*MAX_OTH_SHIP_NUM), high = np.ones(3+10*MAX_OTH_SHIP_NUM))
+        self.observation_space_state0 = gym.spaces.Box(low = -np.ones(3,), high = np.ones(3,))
+        self.observation_space_staet1 = gym.spaces.Box(low = -np.ones(10), high = np.ones(10))
         # Env の設定
         self.step_dt = STEP_DT
         self.oth_num = 0
