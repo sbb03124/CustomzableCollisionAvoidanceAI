@@ -7,9 +7,10 @@ config.gpu_options.allow_growth = True
 tf.compat.v1.keras.backend.set_session(tf.compat.v1.Session(config = config))
 
 # ファイルの読み込み
+import model
 import train
 import environment
-import model
+import neuralnetworks
 
 # main：学習用, test：テスト用
 def main(visualize, reward_params):
@@ -31,15 +32,26 @@ def main(visualize, reward_params):
 
     ######################################################
     env = environment.environment(reward_params)
-    obs_n = (window_length,) + env.observation_space.shape
+    obs0_n = window_length*env.observation_space_state0.shape
+    obs1_n = window_length*env.observation_space_staet1.shape
     act_n = env.action_space.shape
+    
+    actor_nn = neuralnetworks.actor_nn()
+    critic_nn = neuralnetworks.critic_nn()
+    actor_target_nn = neuralnetworks.actor_nn()
+    critic_target_nn = neuralnetworks.critic_nn()
 
+    actor_nn.build( [(1,obs0_n),(1,environment.MAX_OTH_SHIP_NUM,obs1_n)] )
+    actor_target_nn.build( [(1,obs0_n),(1,environment.MAX_OTH_SHIP_NUM,obs1_n)] )
+
+    critic_nn.build( [(1,obs0_n),(1,environment.MAX_OTH_SHIP_NUM,obs1_n), (1,act_n[0])] )
+    critic_target_nn.build( [(1,obs0_n),(1,environment.MAX_OTH_SHIP_NUM,obs1_n), (1,act_n[0])] )
 
     agent = model.Agent(
-        actor_nn,
-        critic_nn,
-        actor_target_nn,
-        critic_target_nn,
+        actor_nn = actor_nn,
+        critic_nn = critic_nn,
+        actor_target_nn = actor_target_nn,
+        critic_target_nn = critic_target_nn,
         random = model.OrnsteinUhlenbeckProcess(
             size=act_n,
             theta=0.01,
@@ -112,6 +124,7 @@ def debug():
     return agent
 
 def test(weight_file, nb_test, visualize, save=False, params=None):
+    raise NotImplementedError
     window_length = 5
     learning_rate = 1e-3
     batch_size = 100
@@ -120,13 +133,6 @@ def test(weight_file, nb_test, visualize, save=False, params=None):
     ##############################################################
     env = environment.environment(params)
     env.test_mode = True
-    if save:
-        from wrapper import RecordVideo
-        from datetime import datetime
-        import os
-        _dir = datetime.now().strftime('video%Y%m%d%H%M%S/')
-        os.makedirs(_dir)
-        env = RecordVideo( env, _dir, name_prefix='evalu_each' )
 
     obs_n = (window_length,) + env.observation_space.shape
     act_n = env.action_space.shape
